@@ -7,6 +7,7 @@ import re
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+from tensorflow.keras import backend as K
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from transformers import DistilBertTokenizerFast, TFDistilBertForTokenClassification
 from tqdm import tqdm
@@ -23,11 +24,17 @@ class BertDataset:
         self.id2tag = None
         self.unique_tags = None
         self._model = None
+        self.class_weights = self.create_class_weights()
         self.tokenizer = DistilBertTokenizerFast.from_pretrained("distilbert-base-cased")
         self._dataset_path = Path(dataset_path)
         self._data = self._load_data(self._dataset_path)
         train_dataset, test_dataset = self._process_data()
         self.train_model(train_dataset, test_dataset)
+        self.test_model(test_dataset)
+
+    def create_class_weights(self):
+        class_weights = [1, 1, 0, 1, 1, 1, 1, 1, 1, 1]
+        return tf.constant(class_weights, dtype=tf.int64)[tf.newaxis, tf.newaxis, :]
 
     def _load_data(self, data_path):
         texts = list()
@@ -64,12 +71,32 @@ class BertDataset:
         train_size = self.dataset_size - int(self.dataset_size * self.test_ratio) - 1
         return all_items[:train_size], all_items[train_size:]
 
+    # def weighted_loss(self, y_true, y_pred):
+    #     y_true[y_true == 2] = 0
+    #     y_pred[y_pred == 2] =
+    #     tf.print(y_pred)
+    #     return self._model.compute_loss(y_true*self.class_weights, y_pred*self.class_weights)
+
+
     def train_model(self, train_data, test_data):
         self._model = TFDistilBertForTokenClassification.from_pretrained('distilbert-base-cased',
                                                                          num_labels=len(self.unique_tags))
         optimizer = tf.keras.optimizers.Adam(learning_rate=1e-5)
-        self._model.compile(optimizer=optimizer, loss=self._model.compute_loss, metrics=['accuracy'])
+        loss = self._model.compute_loss
+        self._model.compile(optimizer=optimizer, loss=loss, metrics=['accuracy'])
         self._model.fit(train_data, validation_data=test_data, epochs=3, batch_size=8)
+
+    def test_model(self, test_data):
+        id = 5
+        small_set = test_data.take(1)
+        pred = self._model.predict(small_set)
+        pred = np.argmax(pred['logits'], axis=-1)
+        pred = [self.id2tag[idx] for idx in pred[id]]
+        gt = list(small_set.as_numpy_iterator())
+        gt = [self.id2tag.get(idx, 'Empty') for idx in gt[0][1][id]]
+        print('Eval for test id = ', id)
+        print('Prediction: ', pred)
+        print('Ground True:', gt)
 
     def _get_text(self, data: list):
         texts = list()
@@ -132,7 +159,7 @@ class BertDataset:
         return cleaned_data
 
     def _clean_dataset(self, data):
-        cleanedDF = pd.DataFrame(columns=["setences_cleaned"])
+        cleanedDF = pd.DataFrame(columns=["sentences_cleaned"])
         sum1 = 0
         for i in tqdm(range(len(data))):
             start = 0
@@ -164,12 +191,13 @@ class BertDataset:
             sum1 = sum1 + numberOfWords
         return cleanedDF
 
-    def _create_tags(self, data:pd.DataFrame):
-        self.unique_tags = set(data['setences_cleaned'].explode().unique())
+    def _create_tags(self, data: pd.DataFrame):
+        self.unique_tags = set(data['sentences_cleaned'].explode().unique())
+        self.unique_tags = sorted(list(self.unique_tags))
         self.tag2id = {tag: id for id, tag in enumerate(self.unique_tags)}
         self.id2tag = {id: tag for tag, id in self.tag2id.items()}
 
-        labels = data['setences_cleaned'].values.tolist()
+        labels = data['sentences_cleaned'].values.tolist()
         tags = pad_sequences([[self.tag2id.get(l) for l in lab] for lab in labels],
                              maxlen=self.max_len, value=self.tag2id["Empty"], padding="post",
                              dtype="long", truncating="post")
