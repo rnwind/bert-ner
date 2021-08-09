@@ -9,13 +9,13 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow.keras import backend as K
 from tensorflow.keras.preprocessing.sequence import pad_sequences
-from transformers import DistilBertTokenizerFast, TFDistilBertForTokenClassification
+from transformers import BertTokenizerFast, TFBertForTokenClassification
 from tqdm import tqdm
 
 
 class BertDataset:
     def __init__(self, dataset_path):
-        self.max_len = 512
+        self.max_len = 256
         self.random_seed = 42
         self.test_ratio = 0.1
         self.dataset_size = None
@@ -25,7 +25,7 @@ class BertDataset:
         self.unique_tags = None
         self._model = None
         self.class_weights = self.create_class_weights()
-        self.tokenizer = DistilBertTokenizerFast.from_pretrained("distilbert-base-cased")
+        self.tokenizer = BertTokenizerFast.from_pretrained("bert-base-german-cased")
         self._dataset_path = Path(dataset_path)
         self._data = self._load_data(self._dataset_path)
         train_dataset, test_dataset = self._process_data()
@@ -55,6 +55,7 @@ class BertDataset:
 
         input_ids = np.array(tokenized_data['input_ids'])
         labels = np.array(tokenized_data['labels'])
+        # labels[labels==2]=-100
         train_items, test_items = self.get_train_test_ids()
 
         train_dataset = tf.data.Dataset.from_tensor_slices((input_ids[train_items], labels[train_items]))
@@ -79,12 +80,15 @@ class BertDataset:
 
 
     def train_model(self, train_data, test_data):
-        self._model = TFDistilBertForTokenClassification.from_pretrained('distilbert-base-cased',
+        self._model = TFBertForTokenClassification.from_pretrained('bert-base-german-cased',
                                                                          num_labels=len(self.unique_tags))
-        optimizer = tf.keras.optimizers.Adam(learning_rate=1e-5)
+        optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001)
         loss = self._model.compute_loss
+        self._model.layers[0].trainable = False
         self._model.compile(optimizer=optimizer, loss=loss, metrics=['accuracy'])
-        self._model.fit(train_data, validation_data=test_data, epochs=3, batch_size=8)
+        self._model.summary()
+
+        self._model.fit(train_data, validation_data=test_data, epochs=10, batch_size=8)
 
     def test_model(self, test_data):
         id = 5
