@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 from pathlib import Path
+import random
 import json
 import re
 
+import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.preprocessing.sequence import pad_sequences
@@ -13,6 +15,10 @@ from tqdm import tqdm
 class BertDataset:
     def __init__(self, dataset_path):
         self.max_len = 512
+        self.random_seed = 42
+        self.test_ratio = 0.1
+        self.dataset_size = None
+        self.max_item_len = 0
         self.tag2id = None
         self.id2tag = None
         self.unique_tags = None
@@ -20,15 +26,16 @@ class BertDataset:
         self.tokenizer = DistilBertTokenizerFast.from_pretrained("distilbert-base-cased")
         self._dataset_path = Path(dataset_path)
         self._data = self._load_data(self._dataset_path)
-        train_dataset = self._process_data()
-        self.train_model(train_dataset)
+        train_dataset, test_dataset = self._process_data()
+        self.train_model(train_dataset, test_dataset)
 
     def _load_data(self, data_path):
         texts = list()
         labels = list()
         with data_path.open('r') as f:
             data = json.load(f)
-        print(f'Data loaded: {len(data)} items')
+        self.dataset_size = len(data)
+        print(f'Data loaded: {self.dataset_size} items')
         return data
 
     def _process_data(self):
@@ -38,18 +45,31 @@ class BertDataset:
         texts = self._get_text(data)
         tags = self._create_tags(label_data)
         tokenized_data = self.tokenize_and_align_labels(texts, tags)
-        train_dataset = tf.data.Dataset.from_tensor_slices((
-            tokenized_data['input_ids'],
-            tokenized_data['labels']
-        ))
-        return train_dataset
 
-    def train_model(self, train_data):
+        input_ids = np.array(tokenized_data['input_ids'])
+        labels = np.array(tokenized_data['labels'])
+        train_items, test_items = self.get_train_test_ids()
+
+        train_dataset = tf.data.Dataset.from_tensor_slices((input_ids[train_items], labels[train_items]))
+        train_dataset = train_dataset.shuffle(200).batch(8)
+
+        test_dataset = tf.data.Dataset.from_tensor_slices((input_ids[test_items], labels[test_items]))
+        test_dataset = test_dataset.batch(8)
+
+        return train_dataset, test_dataset
+
+    def get_train_test_ids(self):
+        all_items = list(range(self.dataset_size))
+        random.Random(self.random_seed).shuffle(all_items)
+        train_size = self.dataset_size - int(self.dataset_size * self.test_ratio) - 1
+        return all_items[:train_size], all_items[train_size:]
+
+    def train_model(self, train_data, test_data):
         self._model = TFDistilBertForTokenClassification.from_pretrained('distilbert-base-cased',
                                                                          num_labels=len(self.unique_tags))
         optimizer = tf.keras.optimizers.Adam(learning_rate=1e-5)
         self._model.compile(optimizer=optimizer, loss=self._model.compute_loss, metrics=['accuracy'])
-        self._model.fit(train_data.shuffle(200).batch(16), epochs=3, batch_size=16)
+        self._model.fit(train_data, validation_data=test_data, epochs=3, batch_size=8)
 
     def _get_text(self, data: list):
         texts = list()
