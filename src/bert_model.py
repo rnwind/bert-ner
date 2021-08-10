@@ -4,12 +4,11 @@ import random
 import json
 import re
 import warnings
-from typing import Dict, List, Optional, Union
+from typing import List
 
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from tensorflow.keras import backend as K
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from transformers import BertTokenizerFast, TFBertForTokenClassification
 from focal_loss import sparse_categorical_focal_loss
@@ -102,14 +101,13 @@ class BertDataset:
         reduced_logits = tf.boolean_mask(tf.reshape(logits, (-1, shape_list(logits)[2])), active_loss)
         labels = tf.boolean_mask(tf.reshape(labels, (-1,)), active_loss)
 
-        return loss_fn(labels, reduced_logits)
+        return sparse_categorical_focal_loss(labels, reduced_logits, gamma=2)
 
     def get_train_test_ids(self):
         all_items = list(range(self.dataset_size))
         random.Random(self.random_seed).shuffle(all_items)
         train_size = self.dataset_size - int(self.dataset_size * self.test_ratio) - 1
         return all_items[:train_size], all_items[train_size:]
-
 
     def train_model(self, train_data, test_data):
         self._model = TFBertForTokenClassification.from_pretrained('bert-base-german-cased',
@@ -122,13 +120,6 @@ class BertDataset:
 
         self._model.fit(train_data, validation_data=test_data, epochs=50, batch_size=8)
 
-    # def train_model2(self, train_data, test_data):
-    #     self._model = TFBertForTokenClassification.from_pretrained('bert-base-german-cased',
-    #                                                                num_labels=len(self.unique_tags))
-    #     trainer = MultilabelTrainer(
-    #         model=model, args=training_args, train_dataset=small_train_dataset, eval_dataset=small_eval_dataset
-    #     )
-
     def test_model(self, test_data):
         id = 5
         small_set = test_data.take(1)
@@ -140,7 +131,6 @@ class BertDataset:
         print('Eval for test id = ', id)
         print('Prediction: ', pred)
         print('Ground True:', gt)
-
 
     def _get_text(self, data: list):
         texts = list()
