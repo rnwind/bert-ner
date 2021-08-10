@@ -3,6 +3,8 @@ from pathlib import Path
 import random
 import json
 import re
+import warnings
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -10,6 +12,7 @@ import tensorflow as tf
 from tensorflow.keras import backend as K
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from transformers import BertTokenizerFast, TFBertForTokenClassification
+from focal_loss import sparse_categorical_focal_loss
 from tqdm import tqdm
 
 
@@ -66,29 +69,65 @@ class BertDataset:
 
         return train_dataset, test_dataset
 
+    def compute_loss(self, labels, logits):
+        def shape_list(tensor: tf.Tensor) -> List[int]:
+            """
+            Deal with dynamic shape in tensorflow cleanly.
+
+            Args:
+                tensor (:obj:`tf.Tensor`): The tensor we want the shape of.
+
+            Returns:
+                :obj:`List[int]`: The shape of the tensor as a list.
+            """
+            dynamic = tf.shape(tensor)
+
+            if tensor.shape == tf.TensorShape(None):
+                return dynamic
+
+            static = tensor.shape.as_list()
+
+            return [dynamic[i] if s is None else s for i, s in enumerate(static)]
+
+        loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(
+            from_logits=True, reduction=tf.keras.losses.Reduction.NONE
+        )
+        # make sure only labels that are not equal to -100
+        # are taken into account as loss
+        if tf.math.reduce_any(labels == -1):
+            warnings.warn("Using `-1` to mask the loss for the token is deprecated. Please use `-100` instead.")
+            active_loss = tf.reshape(labels, (-1,)) != -1
+        else:
+            active_loss = tf.reshape(labels, (-1,)) != -100
+        reduced_logits = tf.boolean_mask(tf.reshape(logits, (-1, shape_list(logits)[2])), active_loss)
+        labels = tf.boolean_mask(tf.reshape(labels, (-1,)), active_loss)
+
+        return loss_fn(labels, reduced_logits)
+
     def get_train_test_ids(self):
         all_items = list(range(self.dataset_size))
         random.Random(self.random_seed).shuffle(all_items)
         train_size = self.dataset_size - int(self.dataset_size * self.test_ratio) - 1
         return all_items[:train_size], all_items[train_size:]
 
-    # def weighted_loss(self, y_true, y_pred):
-    #     y_true[y_true == 2] = 0
-    #     y_pred[y_pred == 2] =
-    #     tf.print(y_pred)
-    #     return self._model.compute_loss(y_true*self.class_weights, y_pred*self.class_weights)
-
 
     def train_model(self, train_data, test_data):
         self._model = TFBertForTokenClassification.from_pretrained('bert-base-german-cased',
                                                                          num_labels=len(self.unique_tags))
         optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001)
-        loss = self._model.compute_loss
+        loss = self.compute_loss
         self._model.layers[0].trainable = False
         self._model.compile(optimizer=optimizer, loss=loss, metrics=['accuracy'])
         self._model.summary()
 
-        self._model.fit(train_data, validation_data=test_data, epochs=10, batch_size=8)
+        self._model.fit(train_data, validation_data=test_data, epochs=50, batch_size=8)
+
+    # def train_model2(self, train_data, test_data):
+    #     self._model = TFBertForTokenClassification.from_pretrained('bert-base-german-cased',
+    #                                                                num_labels=len(self.unique_tags))
+    #     trainer = MultilabelTrainer(
+    #         model=model, args=training_args, train_dataset=small_train_dataset, eval_dataset=small_eval_dataset
+    #     )
 
     def test_model(self, test_data):
         id = 5
@@ -101,6 +140,7 @@ class BertDataset:
         print('Eval for test id = ', id)
         print('Prediction: ', pred)
         print('Ground True:', gt)
+
 
     def _get_text(self, data: list):
         texts = list()
