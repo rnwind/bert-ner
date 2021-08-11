@@ -22,7 +22,7 @@ class NerModel:
         self.unique_tags = None
         self._model = None
         self._dataset_path = Path(dataset_path)
-        self.model_path = Path('model/spacy_ner_model')
+        self._model_path = Path('model/spacy_ner_model')
         self._data = self._load_data(self._dataset_path)
         self.train_data, self.test_data = self._process_data()
         # self.train_model(train_dataset, test_dataset)
@@ -39,8 +39,8 @@ class NerModel:
 
     def _process_data(self):
         data = self._clean_extra_spaces_in_labels()
-        spacy_data = self._trim_entity_spans(data)
-        train_data, test_data = self.train_test_split(spacy_data)
+        # spacy_data = self._trim_entity_spans(data)
+        train_data, test_data = self.train_test_split(data)
         return train_data, test_data
 
 
@@ -88,17 +88,19 @@ class NerModel:
 
     def _save_model(self):
         self._model_path.mkdir(parents=True, exist_ok=True)
-        self._model.to_disk(self.model_path)
+        self._model.to_disk(self._model_path)
 
     def load_and_eval(self):
-        self._model = spacy.load(self.model_path)
+        self._model = spacy.load(self._model_path)
         for text, annotation in self.test_data:
             pred = self._model(text)
-            # print(text
-            # print('-' * 80)
-            print(text)
-            print(pred)
-
+            print('text:', text)
+            print('Predictions: ')
+            for ent in pred.ents:
+                print(f"{ent.label_.upper()} - {ent.text}")
+            print('True entities: ')
+            for ent in annotation['entities']:
+                print(f"{ent[2].upper()} - {text[ent[0]:ent[1]]}")
 
     def test_model(self, test_data):
         pass
