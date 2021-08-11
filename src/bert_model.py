@@ -5,15 +5,12 @@ import json
 import re
 
 import numpy as np
-import pandas as pd
-import tensorflow as tf
-from tensorflow.keras import backend as K
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from transformers import BertTokenizerFast, TFBertForTokenClassification
-from tqdm import tqdm
+import spacy
+from spacy.training import Example
+from spacy.tokens import Doc
 
 
-class BertDataset:
+class NerModel:
     def __init__(self, dataset_path):
         self.max_len = 256
         self.random_seed = 42
@@ -24,17 +21,12 @@ class BertDataset:
         self.id2tag = None
         self.unique_tags = None
         self._model = None
-        self.class_weights = self.create_class_weights()
-        self.tokenizer = BertTokenizerFast.from_pretrained("bert-base-german-cased")
         self._dataset_path = Path(dataset_path)
+        self.model_path = Path('model/spacy_ner_model')
         self._data = self._load_data(self._dataset_path)
-        train_dataset, test_dataset = self._process_data()
-        self.train_model(train_dataset, test_dataset)
-        self.test_model(test_dataset)
-
-    def create_class_weights(self):
-        class_weights = [1, 1, 0, 1, 1, 1, 1, 1, 1, 1]
-        return tf.constant(class_weights, dtype=tf.int64)[tf.newaxis, tf.newaxis, :]
+        self.train_data, self.test_data = self._process_data()
+        # self.train_model(train_dataset, test_dataset)
+        # self.test_model(test_dataset)
 
     def _load_data(self, data_path):
         texts = list()
@@ -46,68 +38,77 @@ class BertDataset:
         return data
 
     def _process_data(self):
-        data = self._convert_dataturks_to_spacy()
-        data = self._trim_entity_spans(data)
-        label_data = self._clean_dataset(data)
-        texts = self._get_text(data)
-        tags = self._create_tags(label_data)
-        tokenized_data = self.tokenize_and_align_labels(texts, tags)
+        data = self._clean_extra_spaces_in_labels()
+        spacy_data = self._trim_entity_spans(data)
+        train_data, test_data = self.train_test_split(spacy_data)
+        return train_data, test_data
 
-        input_ids = np.array(tokenized_data['input_ids'])
-        labels = np.array(tokenized_data['labels'])
-        # labels[labels==2]=-100
-        train_items, test_items = self.get_train_test_ids()
 
-        train_dataset = tf.data.Dataset.from_tensor_slices((input_ids[train_items], labels[train_items]))
-        train_dataset = train_dataset.shuffle(200).batch(8)
 
-        test_dataset = tf.data.Dataset.from_tensor_slices((input_ids[test_items], labels[test_items]))
-        test_dataset = test_dataset.batch(8)
 
-        return train_dataset, test_dataset
 
-    def get_train_test_ids(self):
-        all_items = list(range(self.dataset_size))
+
+    def train_test_split(self, data):
+        all_items = data.copy()
         random.Random(self.random_seed).shuffle(all_items)
         train_size = self.dataset_size - int(self.dataset_size * self.test_ratio) - 1
         return all_items[:train_size], all_items[train_size:]
 
-    # def weighted_loss(self, y_true, y_pred):
-    #     y_true[y_true == 2] = 0
-    #     y_pred[y_pred == 2] =
-    #     tf.print(y_pred)
-    #     return self._model.compute_loss(y_true*self.class_weights, y_pred*self.class_weights)
 
+    def train_model(self):
+        nlp = spacy.blank('de')
+        ner = None
+        if 'ner' not in nlp.pipe_names:
+            ner = nlp.add_pipe('ner', last=True)
 
-    def train_model(self, train_data, test_data):
-        self._model = TFBertForTokenClassification.from_pretrained('bert-base-german-cased',
-                                                                         num_labels=len(self.unique_tags))
-        optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001)
-        loss = self._model.compute_loss
-        self._model.layers[0].trainable = False
-        self._model.compile(optimizer=optimizer, loss=loss, metrics=['accuracy'])
-        self._model.summary()
+        for _, annotation in self.train_data:
+            for ent in annotation['entities']:
+                ner.add_label(ent[2])
 
-        self._model.fit(train_data, validation_data=test_data, epochs=10, batch_size=8)
+        other_pipes = [pipe for pipe in nlp.pipe_names if pipe != 'ner']
+        with nlp.disable_pipes(*other_pipes):
+            optimizer = nlp.begin_training()
+            for i in range(10):
+                print(f'Epoch: {i}')
+                random.shuffle(self.train_data)
+                losses = {}
+                index = 0
+                for text, annotation in self.train_data:
+                    doc = nlp.make_doc(text)
+                    example = Example.from_dict(doc, annotation)
+                    nlp.update(
+                        [example],
+                        drop=0.2,
+                        sgd=optimizer,
+                        losses=losses)
+
+                print(losses)
+        self._model = nlp
+        self._save_model()
+
+    def _save_model(self):
+        self._model_path.mkdir(parents=True, exist_ok=True)
+        self._model.to_disk(self.model_path)
+
+    def load_and_eval(self):
+        self._model = spacy.load(self.model_path)
+        for text, annotation in self.test_data:
+            pred = self._model(text)
+            # print(text
+            # print('-' * 80)
+            print(text)
+            print(pred)
+
 
     def test_model(self, test_data):
-        id = 5
-        small_set = test_data.take(1)
-        pred = self._model.predict(small_set)
-        pred = np.argmax(pred['logits'], axis=-1)
-        pred = [self.id2tag[idx] for idx in pred[id]]
-        gt = list(small_set.as_numpy_iterator())
-        gt = [self.id2tag.get(idx, 'Empty') for idx in gt[0][1][id]]
-        print('Eval for test id = ', id)
-        print('Prediction: ', pred)
-        print('Ground True:', gt)
+        pass
 
     def _get_text(self, data: list):
         texts = list()
         [texts.append(text) for text, _ in data]
         return texts
 
-    def _convert_dataturks_to_spacy(self):
+    def _clean_extra_spaces_in_labels(self):
         training_data = list()
         try:
             for item in self._data:
@@ -162,75 +163,4 @@ class BertDataset:
             cleaned_data.append([text, {'entities': valid_entities}])
         return cleaned_data
 
-    def _clean_dataset(self, data):
-        cleanedDF = pd.DataFrame(columns=["sentences_cleaned"])
-        sum1 = 0
-        for i in tqdm(range(len(data))):
-            start = 0
-            emptyList = ["Empty"] * len(data[i][0].split())
-            numberOfWords = 0
-            lenOfString = len(data[i][0])
-            strData = data[i][0]
-            strDictData = data[i][1]
-            lastIndexOfSpace = strData.rfind(' ')
-            for i in range(lenOfString):
-                if (strData[i] == " " and strData[i + 1] != " "):
-                    for k, v in strDictData.items():
-                        for j in range(len(v)):
-                            entList = v[len(v) - j - 1]
-                            if (start >= int(entList[0]) and i <= int(entList[1])):
-                                emptyList[numberOfWords] = entList[2]
-                                break
-                            else:
-                                continue
-                    start = i + 1
-                    numberOfWords += 1
-                if (i == lastIndexOfSpace):
-                    for j in range(len(v)):
-                        entList = v[len(v) - j - 1]
-                        if (lastIndexOfSpace >= int(entList[0]) and lenOfString <= int(entList[1])):
-                            emptyList[numberOfWords] = entList[2]
-                            numberOfWords += 1
-            cleanedDF = cleanedDF.append(pd.Series([emptyList], index=cleanedDF.columns), ignore_index=True)
-            sum1 = sum1 + numberOfWords
-        return cleanedDF
-
-    def _create_tags(self, data: pd.DataFrame):
-        self.unique_tags = set(data['sentences_cleaned'].explode().unique())
-        self.unique_tags = sorted(list(self.unique_tags))
-        self.tag2id = {tag: id for id, tag in enumerate(self.unique_tags)}
-        self.id2tag = {id: tag for tag, id in self.tag2id.items()}
-
-        labels = data['sentences_cleaned'].values.tolist()
-        tags = pad_sequences([[self.tag2id.get(l) for l in lab] for lab in labels],
-                             maxlen=self.max_len, value=self.tag2id["Empty"], padding="post",
-                             dtype="long", truncating="post")
-        return tags
-
-    def tokenize_and_align_labels(self, examples, tags, label_all_tokens=True):
-        tokenized_inputs = self.tokenizer(examples, truncation=True, is_split_into_words=False, padding='max_length',
-                                          max_length=self.max_len)
-        labels = []
-        for i, label in enumerate(tags):
-            word_ids = tokenized_inputs.word_ids(batch_index=i)
-            previous_word_idx = None
-            label_ids = []
-            for word_idx in word_ids:
-                # Special tokens have a word id that is None. We set the label to -100 so they are automatically
-                # ignored in the loss function.
-                if word_idx is None:
-                    label_ids.append(-100)
-                # We set the label for the first token of each word.
-                elif word_idx != previous_word_idx:
-                    label_ids.append(label[word_idx])
-                # For the other tokens in a word, we set the label to either the current label or -100, depending on
-                # the label_all_tokens flag.
-                else:
-                    label_ids.append(label[word_idx] if label_all_tokens else -100)
-                previous_word_idx = word_idx
-
-            labels.append(label_ids)
-
-        tokenized_inputs["labels"] = labels
-        return tokenized_inputs
 
