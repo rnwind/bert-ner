@@ -4,10 +4,9 @@ import random
 import json
 import re
 
-import numpy as np
 import spacy
 from spacy.training import Example
-from spacy.tokens import Doc
+
 
 
 class NerModel:
@@ -78,7 +77,7 @@ class NerModel:
             optimizer = nlp.begin_training()
             best_score = 0
             for i in range(15):
-                print(f'For epoch: {i}\n')
+                print(f'\nEpoch: {i}')
                 random.shuffle(self.train_data)
                 losses = {}
                 index = 0
@@ -119,7 +118,7 @@ class NerModel:
         print(f'\n\n{"="*80} All predictions on the test dataset {"="*80}\n')
         for text, annotation in self.test_data:
             pred = self._model(text)
-            print('text:', text)
+            print('Text:', text)
             print('Predictions: ')
             for ent in pred.ents:
                 print(f"{ent.label_.upper()} - {ent.text}")
