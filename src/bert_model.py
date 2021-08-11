@@ -54,6 +54,13 @@ class NerModel:
         train_size = self.dataset_size - int(self.dataset_size * self.test_ratio) - 1
         return all_items[:train_size], all_items[train_size:]
 
+    def create_eval_examples(self, model):
+        test_examples = list()
+        for text, annotation in self.test_data:
+            doc = model.make_doc(text)
+            example = Example.from_dict(doc, annotation)
+            test_examples.append(example)
+        return test_examples
 
     def train_model(self):
         nlp = spacy.blank('de')
@@ -65,14 +72,18 @@ class NerModel:
             for ent in annotation['entities']:
                 ner.add_label(ent[2])
 
+        test_examples = self.create_eval_examples(nlp)
         other_pipes = [pipe for pipe in nlp.pipe_names if pipe != 'ner']
         with nlp.disable_pipes(*other_pipes):
             optimizer = nlp.begin_training()
-            for i in range(10):
-                print(f'Epoch: {i}')
+            best_score = 0
+            for i in range(15):
+                print(f'For epoch: {i}\n')
                 random.shuffle(self.train_data)
                 losses = {}
                 index = 0
+
+                # train
                 for text, annotation in self.train_data:
                     doc = nlp.make_doc(text)
                     example = Example.from_dict(doc, annotation)
@@ -81,34 +92,41 @@ class NerModel:
                         drop=0.2,
                         sgd=optimizer,
                         losses=losses)
+                print('loss:', losses['ner'])
 
-                print(losses)
-        self._model = nlp
-        self._save_model()
+                # eval and save
+                scores = nlp.evaluate(examples=test_examples, batch_size=8)
+                print('Scores on test:', scores)
+                if scores['ents_f'] > best_score:
+                    best_score = scores['ents_f']
+                    self._save_model(nlp)
 
-    def _save_model(self):
+    def _save_model(self, model):
         self._model_path.mkdir(parents=True, exist_ok=True)
+        self._model = model
         self._model.to_disk(self._model_path)
+        print('model saved to disk')
 
     def load_and_eval(self):
+        print('Loading model from disk...')
         self._model = spacy.load(self._model_path)
+        print('Ok')
+
+        test_examples = self.create_eval_examples(self._model)
+        scores = self._model.evaluate(examples=test_examples, batch_size=8)
+        print(f'\nEval scores: {scores}')
+
+        print(f'\n\n{"="*80} All predictions on the test dataset {"="*80}\n')
         for text, annotation in self.test_data:
             pred = self._model(text)
             print('text:', text)
             print('Predictions: ')
             for ent in pred.ents:
                 print(f"{ent.label_.upper()} - {ent.text}")
-            print('True entities: ')
+            print('\nTrue entities: ')
             for ent in annotation['entities']:
                 print(f"{ent[2].upper()} - {text[ent[0]:ent[1]]}")
-
-    def test_model(self, test_data):
-        pass
-
-    def _get_text(self, data: list):
-        texts = list()
-        [texts.append(text) for text, _ in data]
-        return texts
+            print('-'*100)
 
     def _clean_extra_spaces_in_labels(self):
         training_data = list()
@@ -164,5 +182,3 @@ class NerModel:
                 valid_entities.append([valid_start, valid_end, label])
             cleaned_data.append([text, {'entities': valid_entities}])
         return cleaned_data
-
-
