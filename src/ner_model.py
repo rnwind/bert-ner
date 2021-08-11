@@ -8,28 +8,18 @@ import spacy
 from spacy.training import Example
 
 
-
 class NerModel:
-    def __init__(self, dataset_path):
-        self.max_len = 256
+    def __init__(self, dataset_path, model_path):
         self.random_seed = 42
         self.test_ratio = 0.1
         self.dataset_size = None
-        self.max_item_len = 0
-        self.tag2id = None
-        self.id2tag = None
-        self.unique_tags = None
         self._model = None
         self._dataset_path = Path(dataset_path)
-        self._model_path = Path('model/spacy_ner_model')
+        self._model_path = Path(model_path)
         self._data = self._load_data(self._dataset_path)
         self.train_data, self.test_data = self._process_data()
-        # self.train_model(train_dataset, test_dataset)
-        # self.test_model(test_dataset)
 
     def _load_data(self, data_path):
-        texts = list()
-        labels = list()
         with data_path.open('r') as f:
             data = json.load(f)
         self.dataset_size = len(data)
@@ -38,22 +28,17 @@ class NerModel:
 
     def _process_data(self):
         data = self._clean_extra_spaces_in_labels()
-        # spacy_data = self._trim_entity_spans(data)
-        train_data, test_data = self.train_test_split(data)
+        spacy_data = self._trim_entity_spans(data)
+        train_data, test_data = self._train_test_split(spacy_data)
         return train_data, test_data
 
-
-
-
-
-
-    def train_test_split(self, data):
+    def _train_test_split(self, data):
         all_items = data.copy()
         random.Random(self.random_seed).shuffle(all_items)
         train_size = self.dataset_size - int(self.dataset_size * self.test_ratio) - 1
         return all_items[:train_size], all_items[train_size:]
 
-    def create_eval_examples(self, model):
+    def _create_eval_examples(self, model):
         test_examples = list()
         for text, annotation in self.test_data:
             doc = model.make_doc(text)
@@ -71,7 +56,7 @@ class NerModel:
             for ent in annotation['entities']:
                 ner.add_label(ent[2])
 
-        test_examples = self.create_eval_examples(nlp)
+        test_examples = self._create_eval_examples(nlp)
         other_pipes = [pipe for pipe in nlp.pipe_names if pipe != 'ner']
         with nlp.disable_pipes(*other_pipes):
             optimizer = nlp.begin_training()
@@ -80,7 +65,6 @@ class NerModel:
                 print(f'\nEpoch: {i}')
                 random.shuffle(self.train_data)
                 losses = {}
-                index = 0
 
                 # train
                 for text, annotation in self.train_data:
@@ -107,11 +91,12 @@ class NerModel:
         print('model saved to disk')
 
     def load_and_eval(self):
+        print(f'\n\n{"="*80} Evaluating the model {self._model_path}{"="*80}\n')
         print('Loading model from disk...')
         self._model = spacy.load(self._model_path)
         print('Ok')
 
-        test_examples = self.create_eval_examples(self._model)
+        test_examples = self._create_eval_examples(self._model)
         scores = self._model.evaluate(examples=test_examples, batch_size=8)
         print(f'\nEval scores: {scores}')
 
@@ -153,14 +138,6 @@ class NerModel:
             return None
 
     def _trim_entity_spans(self, data: list) -> list:
-        """Removes leading and trailing white spaces from entity spans.
-
-        Args:
-            data (list): The data to be cleaned in spaCy JSON format.
-
-        Returns:
-            list: The cleaned data.
-        """
         invalid_span_tokens = re.compile(r'\s')
 
         cleaned_data = list()
