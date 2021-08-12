@@ -27,8 +27,8 @@ class NerModel:
         return data
 
     def _process_data(self):
-        data = self._clean_extra_spaces_in_labels()
-        spacy_data = self._trim_entity_spans(data)
+        spacy_data = self._clean_extra_spaces_in_labels()
+        spacy_data = self._trim_entity_spans(spacy_data)
         train_data, test_data = self._train_test_split(spacy_data)
         return train_data, test_data
 
@@ -45,6 +45,28 @@ class NerModel:
             example = Example.from_dict(doc, annotation)
             test_examples.append(example)
         return test_examples
+
+    def _validate_text(self, text, annotation, model):
+
+        doc = model.make_doc(text)
+        ents = annotation['entities']
+        tags = spacy.training.offsets_to_biluo_tags(doc, ents)
+        if len(tags) == 0:
+            return
+        print(text)
+        print('tags = ', tags)
+        errors = dict()
+        for i in range(len(tags)):
+            if tags[i] == '-':
+                token = doc[i]
+                for j in range(len(ents)):
+                    if str(token) == text[ents[j][0]:ents[j][1]+1]:
+                        errors[ents[j][2]] = text[ents[j][0]:ents[j][1]+1]
+
+        print('errors =', errors)
+
+
+
 
     def train_model(self):
         nlp = spacy.blank('de')
@@ -69,6 +91,7 @@ class NerModel:
                 # train
                 for text, annotation in self.train_data:
                     doc = nlp.make_doc(text)
+                    # self._validate_text(text, annotation, nlp)
                     example = Example.from_dict(doc, annotation)
                     nlp.update(
                         [example],
@@ -113,15 +136,18 @@ class NerModel:
             print('-'*100)
 
     def _clean_extra_spaces_in_labels(self):
+        extra_symbols = ['.', '*']
         training_data = list()
         try:
             for item in self._data:
                 text = item['text'].replace("\n", " ")
                 annotations = item['labels']
+                annotations = sorted(annotations, key=lambda x: x[0])
                 entities = list()
+                ent_offset = 0
                 for annotation in annotations:
-                    point_start = annotation[0]
-                    point_end = annotation[1]
+                    point_start = annotation[0] + ent_offset
+                    point_end = annotation[1] + ent_offset
                     point_text = text[point_start:point_end]
                     point_label = annotation[2]
                     lstrip_diff = len(point_text) - len(point_text.lstrip())
@@ -130,6 +156,9 @@ class NerModel:
                         point_start = point_start + lstrip_diff
                     if rstrip_diff != 0:
                         point_end = point_end - rstrip_diff
+                    elif text[min(point_end, len(text)-1)] == '.':
+                        text = text[:point_end] + ' ' + text[min(point_end, len(text)-1):]
+                        ent_offset += 1
                     entities.append((point_start, point_end, point_label))
                 training_data.append((text, {"entities": entities}))
             return training_data
