@@ -5,6 +5,7 @@ import json
 import re
 
 import spacy
+from spacy import displacy
 from spacy.training import Example
 
 
@@ -29,6 +30,8 @@ class NerModel:
     def _process_data(self):
         spacy_data = self._clean_extra_spaces_in_labels()
         spacy_data = self._trim_entity_spans(spacy_data)
+        spacy_data = self._trim_text_spans(spacy_data)
+
         train_data, test_data = self._train_test_split(spacy_data)
         return train_data, test_data
 
@@ -64,7 +67,7 @@ class NerModel:
                         errors[ents[j][2]] = text[ents[j][0]:ents[j][1]+1]
 
         print('errors =', errors)
-
+        print(annotation)
 
 
 
@@ -159,6 +162,7 @@ class NerModel:
                     elif text[min(point_end, len(text)-1)] == '.':
                         text = text[:point_end] + ' ' + text[min(point_end, len(text)-1):]
                         ent_offset += 1
+                    assert text[point_start] !=' ' and text[point_end-1] != ' ', 'Extra white space in entity'
                     entities.append((point_start, point_end, point_label))
                 training_data.append((text, {"entities": entities}))
             return training_data
@@ -168,7 +172,6 @@ class NerModel:
 
     def _trim_entity_spans(self, data: list) -> list:
         invalid_span_tokens = re.compile(r'\s')
-
         cleaned_data = list()
         for text, annotations in data:
             entities = annotations['entities']
@@ -187,3 +190,35 @@ class NerModel:
                 valid_entities.append([valid_start, valid_end, label])
             cleaned_data.append([text, {'entities': valid_entities}])
         return cleaned_data
+
+    def _trim_text_spans(self, data: list) -> list:
+        new_data = list()
+        for text, annotation in data:
+            total_span_len = 0
+            spans = list()
+            for match in re.finditer(r'\s+', text):
+                span = match.span()[1] - match.span()[0]
+                if span >= 1:
+                    # print(match.span())
+                    spans.append(match.span())
+                    total_span_len += span - 1
+            new_entities = self._shift_entities(spans, annotation['entities'])
+            new_text = re.sub(r'\s+', ' ', text)
+            # print(f'text shrinked: {len(text) - len(new_text)}, total_span: {total_span_len}')
+            new_data.append([new_text, {'entities': new_entities}])
+            # print(f'old item: {text, annotation}')
+            # print(f'new item: {new_text, {"entities": new_entities}}')
+        return new_data
+
+    def _shift_entities(self, spans: list, entities: list) -> list:
+        new_entities = [x[:] for x in entities]
+        for span in spans:
+            for i, ent in enumerate(entities):
+                # assert not(ent[0]<=span[0]<=ent[1] or ent[0]<=span[1]<=ent[1]), f"{span, ent}"
+                if span[1] <= ent[0]:
+                    span_len = span[1] - span[0]
+                    new_entities[i][0] -= span_len - 1
+                if span[1] <= ent[1]:
+                    span_len = span[1] - span[0]
+                    new_entities[i][1] -= span_len - 1
+        return new_entities
