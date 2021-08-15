@@ -10,4 +10,4 @@ if __name__ == '__main__':
     model.train_model()
 
     # Load trained model from disk and evaluates it
-    # model.load_and_eval()
+    model.load_and_eval()
